@@ -1,0 +1,32 @@
+spring:
+  datasource:
+    url: jdbc:tc:postgresql:16-alpine:///urlshortener
+    username: test
+    password: test
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: true
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    topic:
+      click-events: click-events
+
+  data:
+    web:
+      base-url: https://sho.rt
+
+server:
+  port: 0
+
+logging:
+  level:
+    com.urlshortener: DEBUG

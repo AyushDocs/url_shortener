@@ -1,0 +1,118 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "panels": [
+    {
+      "title": "URLs Created",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "increase(url_created_total[5m])",
+          "legendFormat": "created"
+        }
+      ],
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 }
+    },
+    {
+      "title": "Total Redirects",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "increase(url_redirect_total[5m])",
+          "legendFormat": "redirects"
+        }
+      ],
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 }
+    },
+    {
+      "title": "Cache Hit Rate",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "increase(url_cache_hit_total[5m]) / (increase(url_cache_hit_total[5m]) + increase(url_cache_miss_total[5m])) * 100",
+          "legendFormat": "hit rate %"
+        }
+      ],
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 }
+    },
+    {
+      "title": "Analytics Events Published",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "increase(url_analytics_published_total[5m])",
+          "legendFormat": "published"
+        }
+      ],
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 }
+    },
+    {
+      "title": "Redirect Latency (p50, p95, p99)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "url_redirect_duration_seconds{quantile=\"0.5\"}",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "url_redirect_duration_seconds{quantile=\"0.95\"}",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "url_redirect_duration_seconds{quantile=\"0.99\"}",
+          "legendFormat": "p99"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 }
+    },
+    {
+      "title": "Redirect Rate (req/s)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "rate(url_redirect_total[1m])",
+          "legendFormat": "redirects/s"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 }
+    },
+    {
+      "title": "HTTP Request Rate",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "rate(http_server_requests_seconds_count[1m])",
+          "legendFormat": "{{method}} {{uri}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 }
+    },
+    {
+      "title": "Cache Operations",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "rate(url_cache_hit_total[1m])",
+          "legendFormat": "hits/s"
+        },
+        {
+          "expr": "rate(url_cache_miss_total[1m])",
+          "legendFormat": "misses/s"
+        },
+        {
+          "expr": "rate(url_cache_update_total[1m])",
+          "legendFormat": "updates/s"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 }
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["url-shortener"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "URL Shortener Dashboard",
+  "uid": "url-shortener"
+}

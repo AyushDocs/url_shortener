@@ -1,0 +1,83 @@
+spring:
+  application:
+    name: url-shortener
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/urlshortener
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      idle-timeout: 30000
+      connection-timeout: 5000
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        jdbc:
+          batch_size: 25
+          fetch_size: 50
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      timeout: 2000
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+          max-wait: 2000
+
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      retries: 3
+    topic:
+      click-events: click-events
+
+server:
+  port: 8080
+
+app:
+  short-code:
+    length: 6
+  rate-limit:
+    max-requests-per-minute: 100
+    redirect-max-requests-per-minute: 1000
+  cache:
+    url-ttl-seconds: 3600
+    analytics-ttl-seconds: 300
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      percentiles:
+        http.server.requests: 0.5,0.75,0.95,0.99
+
+logging:
+  level:
+    com.urlshortener: INFO
+    org.hibernate.SQL: WARN
