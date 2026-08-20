@@ -1,11 +1,9 @@
 package com.urlshortener.generator;
 
-import com.urlshortener.domain.Url;
-import com.urlshortener.repository.UrlRepository;
+import com.urlshortener.distributed.persistence.ShardedUrlRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 
 import java.util.concurrent.ThreadLocalRandom;
@@ -18,19 +16,19 @@ public class ShortCodeGenerator {
     private static final int MAX_RETRIES = 5;
 
     private final int codeLength;
-    private final UrlRepository urlRepository;
+    private final ShardedUrlRepository shardedUrlRepository;
 
     public ShortCodeGenerator(
             @Value("${app.short-code.length:6}") int codeLength,
-            UrlRepository urlRepository) {
+            ShardedUrlRepository shardedUrlRepository) {
         this.codeLength = codeLength;
-        this.urlRepository = urlRepository;
+        this.shardedUrlRepository = shardedUrlRepository;
     }
 
     public String generateUnique() {
         for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
             String code = generateRandom();
-            if (!urlRepository.existsByShortCode(code)) {
+            if (!shardedUrlRepository.existsByShortCode(code)) {
                 return code;
             }
             log.warn("Collision on attempt {}: shortCode={}", attempt + 1, code);

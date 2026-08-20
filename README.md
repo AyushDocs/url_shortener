@@ -1,6 +1,6 @@
-# URL Shortener — System Design Project
+# URL Shortener — Distributed System Design Project
 
-A system-design-oriented URL shortener built with Spring Boot, demonstrating distributed-systems concerns: ID generation, collision handling, persistence, caching, concurrency, rate limiting, expiration, analytics, and horizontal scalability.
+A system-design-oriented URL shortener built with Spring Boot, demonstrating distributed-systems concerns: consistent-hashing sharding, cache-aside with Redis, async analytics via Kafka, sliding-window rate limiting, concurrent collision handling, expiration, and observability.
 
 ## Architecture
 
@@ -17,9 +17,40 @@ A system-design-oriented URL shortener built with Spring Boot, demonstrating dis
               ▼          ▼          ▼
         ┌──────────┐ ┌───────┐ ┌─────────┐
         │  Redis   │ │Postgres│ │  Kafka  │
-        │  Cache   │ │  DB   │ │ (analytics)│
-        └──────────┘ └───────┘ └─────────┘
+        │ (shard-  │ │shard-0 │ │(analytics)│
+        │  aware)  │ │shard-1 │ │         │
+        └──────────┘ │shard-2 │ └─────────┘
+                     └───────┘
 ```
+
+### Sharding Architecture
+
+```
+                       Short Code
+                           │
+                    ┌──────┴──────┐
+                    │  Consistent  │
+                    │  Hash Ring   │
+                    │  (MD5 + 150  │
+                    │  vnodes/shard)│
+                    └──────┬──────┘
+                           │
+              ┌────────────┼────────────┐
+              ▼            ▼            ▼
+         ┌─────────┐ ┌─────────┐ ┌─────────┐
+         │shard-0  │ │shard-1  │ │shard-2  │
+         │Postgres │ │Postgres │ │Postgres │
+         │:5432    │ │:5433    │ │:5434    │
+         └─────────┘ └─────────┘ └─────────┘
+```
+
+URLs are deterministically partitioned across database shards using a consistent hash ring. Each shard is an independent PostgreSQL instance with its own `urls` table. The hash ring ensures that the same short code always maps to the same shard, enabling cache-friendly lookups.
+
+**Key properties:**
+- **Deterministic routing** — same short code always hits the same shard (no lookup table needed)
+- **Even distribution** — 150 virtual nodes per shard via MD5 hashing ensures keys are spread uniformly
+- **Graceful rebalancing** — adding/removing a shard only redistributes ~1/N of keys
+- **Shard-local uniqueness** — `UNIQUE(short_code)` constraint per shard prevents duplicates
 
 ## API
 
@@ -78,86 +109,110 @@ DELETE /api/v1/urls/{shortCode}
 
 ## System Design Decisions
 
+### Why Consistent Hashing?
+
+With 3 database shards, a consistent hash ring with 150 virtual nodes per shard maps short codes to databases deterministically. No central lookup table needed — every app instance computes the same mapping.
+
+**What happens when you add a 4th shard?** Only ~1/4 of keys get redistributed. The other 3/4 stay on their existing shards. This is why consistent hashing beats modular hashing (`hash % N`).
+
 ### Why Base62?
 
-62 alphanumeric characters (`a-z`, `A-Z`, `0-9`). A 6-character code gives **56.8 billion** unique combinations — more than enough to avoid collisions for millions of URLs.
+62 alphanumeric characters. A 6-character code gives **56.8 billion** unique combinations. Short codes are evenly distributed across shards by the hash ring.
 
 ### How are collisions handled?
 
 Two layers:
+1. **Application** — generates random codes, checks the target shard for existence, retries up to 5 times
+2. **Database** — `UNIQUE(short_code)` constraint on each shard rejects duplicates
 
-1. **Application** — generates random codes, checks DB for existence, retries up to 5 times
-2. **Database** — `UNIQUE(short_code)` constraint rejects any duplicate insert
+### Why UUID primary keys instead of sequences?
 
-On collision, the application retries with a new random code. On exhausting retries, falls back to a deterministic Base62 encoding.
+Auto-increment sequences are shard-local — shard-0's ID 100 and shard-1's ID 100 are different URLs. UUIDs eliminate cross-shard ID conflicts and allow any shard to generate IDs independently.
 
-### Why PostgreSQL?
+### How does the cache work with sharding?
 
-- ACID transactions for reliable URL creation
-- `UNIQUE` constraint enforces collision-free codes at the database level
-- Strong ecosystem for indexing and query optimization
-- Horizontal scaling via read replicas
-
-### Why Redis?
-
-- Sub-millisecond reads for the hot path (redirect)
-- Cache-aside pattern: cache miss → DB → populate cache
-- TTL-based expiration aligns with URL expiry
-- Sorted-set sliding window for rate limiting
-
-### What happens on a cache miss?
+Cache keys include the shard name: `shard:shard-0:url:abc123`. This prevents key collisions across shards and allows per-shard TTL management. The flow:
 
 ```
 GET /abc123
    │
-   ├── Redis GET → MISS
+   ├── Consistent hash → shard-1
    │
-   ├── PostgreSQL query
+   ├── Redis GET("shard:shard-1:url:abc123")
+   │      ├── HIT → redirect
+   │      └── MISS → PostgreSQL (shard-1) → Redis SET → redirect
    │
-   ├── Redis SET (with TTL)
-   │
-   └── 302 redirect
+   └── Publish ClickEvent(shard=shard-1) → Kafka
 ```
 
-### What happens if Redis goes down?
+### What happens if one shard goes down?
 
-The system degrades gracefully — all redirects fall through to PostgreSQL. Performance degrades but the service stays up. This is why the DB is the source of truth for `expires_at`.
+Only URLs on that shard are affected. The other shards continue serving normally. The health check reports degraded status. This is better than a single-database failure where everything goes down.
 
-### How do you handle expiration?
+### How do you count clicks across shards?
 
-- `expires_at` in PostgreSQL is the **source of truth**
-- Redis TTL is an **optimization** — if Redis loses data, the DB still protects expired URLs
-- Scheduled job deactivates expired URLs every 5 minutes
+Each redirect publishes a `ClickEvent` tagged with `shardId`. Kafka consumers can aggregate per-shard or globally. Redis holds real-time counts per shard: `shard:shard-0:clicks:abc123`.
 
-### How do you count millions of clicks?
+### How do you scale to more shards?
 
-Each redirect publishes a `ClickEvent` to Kafka asynchronously. A consumer aggregates clicks into the database. Redis holds real-time counts, flushed periodically. This avoids write bottlenecks on every redirect.
+1. Add a new PostgreSQL instance to the config
+2. Update `app.shards.shards` in `application.yaml`
+3. The consistent hash ring auto-distributes — new keys spread to all shards, existing keys only migrate from neighboring shards
+4. For full rebalancing, run a migration job that re-hashes existing URLs
 
-### How do you prevent rate limiting abuse?
+## Project Structure
 
-Redis sliding window rate limiter:
-- **100 requests/minute** for URL creation per IP
-- **1000 requests/minute** for redirects per IP
-- Exceeding returns `429 Too Many Requests`
-
-### How would you scale to multiple regions?
-
-1. Stateless app instances behind a load balancer
-2. Redis Cluster for distributed caching
-3. PostgreSQL read replicas for scaling reads
-4. Kafka partitioning for analytics throughput
-5. CDN/edge caching for hot short URLs
-
-## System Design Evolution
-
-| Phase | What | Why |
-|-------|------|-----|
-| **Phase 1** | Spring Boot + PostgreSQL | Core shortening and redirect |
-| **Phase 2** | Redis cache-aside | Sub-millisecond reads |
-| **Phase 3** | Rate limiting + concurrency handling | Reliability |
-| **Phase 4** | Kafka analytics pipeline | Async click tracking |
-| **Phase 5** | Prometheus + Grafana | Observability |
-| **Phase 6** | Docker Compose | Deployable system |
+```
+src/main/java/com/urlshortener/
+├── UrlShortenerApplication.java
+├── domain/
+│   └── Url.java                          # UUID PK, shardId, clickCount
+├── repository/
+│   └── UrlRepository.java                # JPA interface
+├── distributed/
+│   ├── hashring/
+│   │   └── ConsistentHashRing.java       # MD5 hash ring with virtual nodes
+│   ├── routing/
+│   │   ├── ShardRouter.java              # Maps keys → shards via hash ring
+│   │   ├── ShardRoutingContext.java      # ThreadLocal shard context
+│   │   └── ShardKey.java                 # Partition key enum
+│   ├── persistence/
+│   │   ├── MultiDataSourceConfig.java    # Per-shard DataSource + EntityManagerFactory
+│   │   ├── RoutingDataSource.java        # AbstractRoutingDataSource
+│   │   └── ShardedUrlRepository.java     # Shard-aware repository delegation
+│   └── config/
+│       └── ShardProperties.java          # @ConfigurationProperties
+├── service/
+│   ├── UrlService.java                   # Business logic with shard routing
+│   └── AnalyticsService.java             # Click tracking facade
+├── controller/
+│   ├── UrlManagementController.java      # CRUD API
+│   └── UrlRedirectController.java        # GET /{code} → 302 + analytics
+├── cache/
+│   └── UrlCache.java                     # Shard-aware Redis cache
+├── analytics/
+│   ├── ClickEvent.java                   # Kafka event with shardId
+│   └── ClickEventPublisher.java          # Async publish
+├── generator/
+│   └── ShortCodeGenerator.java           # Base62 + collision retry
+├── ratelimiter/
+│   ├── SlidingWindowRateLimiter.java     # Redis sorted-set
+│   └── RateLimitInterceptor.java         # HTTP interceptor
+├── metrics/
+│   └── UrlMetrics.java                   # Micrometer counters/timers
+├── scheduler/
+│   └── ExpiredUrlCleanupScheduler.java   # Cross-shard cleanup
+├── config/
+│   ├── RedisConfig.java
+│   ├── KafkaConfig.java
+│   ├── SecurityConfig.java
+│   └── WebConfig.java
+└── exception/
+    ├── UrlNotFoundException.java
+    ├── UrlExpiredException.java
+    ├── DuplicateShortCodeException.java
+    └── GlobalExceptionHandler.java
+```
 
 ## Quick Start
 
@@ -172,17 +227,13 @@ Redis sliding window rate limiter:
 docker compose up -d
 ```
 
-Starts: PostgreSQL, Redis, Kafka, Zookeeper, Spring Boot app, Prometheus, Grafana.
-
-- App: http://localhost:8080
-- Prometheus: http://localhost:9090
-- Grafana: http://localhost:3000 (admin/admin)
+Starts: 3 PostgreSQL shards, Redis, Kafka, Zookeeper, Spring Boot app, Prometheus, Grafana.
 
 ### Without Docker
 
 ```bash
-# Start just PostgreSQL and Redis
-docker compose up -d postgres redis kafka
+# Start infrastructure (adjust ports for your 3 shards)
+docker compose up -d postgres-shard-0 postgres-shard-1 postgres-shard-2 redis kafka
 
 # Run the app
 mvn spring-boot:run
@@ -196,7 +247,7 @@ curl -X POST http://localhost:8080/api/v1/urls \
   -H "Content-Type: application/json" \
   -d '{"url": "https://example.com"}'
 
-# Redirect
+# Redirect (observe shard routing in logs)
 curl -v http://localhost:8080/aZ91xK
 
 # Details
@@ -216,36 +267,24 @@ mvn test -Dtest="ShortCodeGeneratorTest,UrlTest,UrlServiceTest"
 mvn test
 ```
 
+The test suite includes:
+- Hash ring distribution verification (10K keys across 3 shards)
+- Shard routing correctness
+- Cache isolation between shards
+- Collision handling
+- Expiration logic
+
 ## Monitoring
 
-Access Grafana at http://localhost:3000 with the pre-built dashboard showing:
-
-- URLs created
-- Total redirects
-- Cache hit rate
-- Analytics events published
-- Redirect latency (p50, p95, p99)
-- HTTP request rate
-- Cache operations (hits/s, misses/s, updates/s)
-
-## Metrics Exposed
-
-| Metric | Description |
-|--------|-------------|
-| `url.created.total` | URLs created |
-| `url.redirect.total` | Redirects served |
-| `url.cache.hit.total` | Cache hits |
-| `url.cache.miss.total` | Cache misses |
-| `url.redirect.duration` | Redirect latency histogram |
-| `url.analytics.published.total` | Click events published to Kafka |
-| `http.server.requests` | HTTP request metrics |
+Access Grafana at http://localhost:3000 (admin/admin) with pre-built dashboards.
 
 ## Tech Stack
 
 - **Spring Boot 4.1** — Web, Data JPA, Data Redis, Kafka, Actuator, Validation
-- **PostgreSQL 16** — Persistent storage
-- **Redis 7** — Caching + rate limiting
+- **PostgreSQL 16** — 3 independent shards
+- **Redis 7** — Shard-aware caching + rate limiting
 - **Apache Kafka** — Async analytics pipeline
+- **Consistent Hashing** — MD5 ring with 150 virtual nodes/shard
 - **Micrometer + Prometheus** — Metrics
 - **Grafana** — Dashboards
 - **Testcontainers** — Integration tests

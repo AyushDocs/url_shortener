@@ -13,7 +13,7 @@ public class AnalyticsService {
         this.clickEventPublisher = clickEventPublisher;
     }
 
-    public void trackClick(String shortCode) {
-        clickEventPublisher.publish(new ClickEvent(shortCode));
+    public void trackClick(String shortCode, String shardId) {
+        clickEventPublisher.publish(new ClickEvent(shortCode, shardId));
     }
 }

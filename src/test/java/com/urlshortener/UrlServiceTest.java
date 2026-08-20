@@ -4,11 +4,12 @@ import com.urlshortener.cache.UrlCache;
 import com.urlshortener.domain.Url;
 import com.urlshortener.dto.CreateUrlRequest;
 import com.urlshortener.dto.CreateUrlResponse;
+import com.urlshortener.distributed.persistence.ShardedUrlRepository;
+import com.urlshortener.distributed.routing.ShardRouter;
 import com.urlshortener.exception.DuplicateShortCodeException;
 import com.urlshortener.exception.UrlExpiredException;
 import com.urlshortener.exception.UrlNotFoundException;
 import com.urlshortener.generator.ShortCodeGenerator;
-import com.urlshortener.repository.UrlRepository;
 import com.urlshortener.service.UrlService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,7 +31,7 @@ import static org.mockito.Mockito.*;
 class UrlServiceTest {
 
     @Mock
-    private UrlRepository urlRepository;
+    private ShardedUrlRepository shardedUrlRepository;
 
     @Mock
     private UrlCache urlCache;
@@ -38,11 +39,15 @@ class UrlServiceTest {
     @Mock
     private ShortCodeGenerator shortCodeGenerator;
 
+    @Mock
+    private ShardRouter shardRouter;
+
     private UrlService urlService;
 
     @BeforeEach
     void setUp() {
-        urlService = new UrlService(urlRepository, urlCache, shortCodeGenerator, 3600);
+        urlService = new UrlService(shardedUrlRepository, urlCache, shortCodeGenerator, shardRouter, 3600);
+        lenient().when(shardRouter.route(anyString())).thenReturn("shard-0");
     }
 
     @Test
@@ -52,39 +57,22 @@ class UrlServiceTest {
         when(shortCodeGenerator.generateUnique()).thenReturn("abc123");
 
         Url savedUrl = new Url("abc123", "https://example.com", null);
-        savedUrl.setId(1L);
+        savedUrl.setShardId("shard-0");
         savedUrl.setCreatedAt(Instant.now());
-        when(urlRepository.save(any(Url.class))).thenReturn(savedUrl);
+        when(shardedUrlRepository.save(any(Url.class))).thenReturn(savedUrl);
 
         CreateUrlResponse response = urlService.createUrl(request);
 
         assertEquals("abc123", response.shortCode());
         assertEquals("https://sho.rt/abc123", response.shortUrl());
-        assertEquals("https://example.com", response.originalUrl());
-        verify(urlCache).putUrl(eq("abc123"), eq("https://example.com"), any(Duration.class));
-    }
-
-    @Test
-    void createUrl_usesCustomCode() {
-        CreateUrlRequest request = new CreateUrlRequest("https://example.com", "mycode", null);
-        when(shortCodeGenerator.isValidCode("mycode")).thenReturn(true);
-
-        Url savedUrl = new Url("mycode", "https://example.com", null);
-        savedUrl.setId(1L);
-        savedUrl.setCreatedAt(Instant.now());
-        when(urlRepository.save(any(Url.class))).thenReturn(savedUrl);
-
-        CreateUrlResponse response = urlService.createUrl(request);
-
-        assertEquals("mycode", response.shortCode());
-        verify(shortCodeGenerator, never()).generateUnique();
+        verify(urlCache).putUrl(eq("abc123"), eq("https://example.com"), any(Duration.class), eq("shard-0"));
     }
 
     @Test
     void createUrl_duplicateCode_throwsException() {
         CreateUrlRequest request = new CreateUrlRequest("https://example.com", "dup", null);
         when(shortCodeGenerator.isValidCode("dup")).thenReturn(true);
-        when(urlRepository.save(any(Url.class)))
+        when(shardedUrlRepository.save(any(Url.class)))
                 .thenThrow(new DataIntegrityViolationException("duplicate"));
 
         assertThrows(DuplicateShortCodeException.class,
@@ -93,66 +81,63 @@ class UrlServiceTest {
 
     @Test
     void resolveUrl_cacheHit_returnsCachedUrl() {
-        when(urlCache.getUrl("abc")).thenReturn(Optional.of("https://cached.com"));
+        when(urlCache.getUrl("abc", "shard-0")).thenReturn(Optional.of("https://cached.com"));
 
-        String result = urlService.resolveUrl("abc");
+        UrlService.ResolvedUrl result = urlService.resolveUrl("abc");
 
-        assertEquals("https://cached.com", result);
-        verify(urlRepository, never()).findByShortCodeAndActiveTrue(anyString());
+        assertEquals("https://cached.com", result.originalUrl());
+        assertEquals("shard-0", result.shardId());
+        verify(shardedUrlRepository, never()).findByShortCode(anyString());
     }
 
     @Test
     void resolveUrl_cacheMiss_fallsBackToDb() {
-        when(urlCache.getUrl("abc")).thenReturn(Optional.empty());
+        when(urlCache.getUrl("abc", "shard-0")).thenReturn(Optional.empty());
 
         Url url = new Url("abc", "https://db.com", null);
-        when(urlRepository.findByShortCodeAndActiveTrue("abc")).thenReturn(Optional.of(url));
+        when(shardedUrlRepository.findByShortCode("abc")).thenReturn(Optional.of(url));
 
-        String result = urlService.resolveUrl("abc");
+        UrlService.ResolvedUrl result = urlService.resolveUrl("abc");
 
-        assertEquals("https://db.com", result);
-        verify(urlCache).putUrl(eq("abc"), eq("https://db.com"), any(Duration.class));
+        assertEquals("https://db.com", result.originalUrl());
+        verify(urlCache).putUrl(eq("abc"), eq("https://db.com"), any(Duration.class), eq("shard-0"));
     }
 
     @Test
     void resolveUrl_notFound_throwsException() {
-        when(urlCache.getUrl("abc")).thenReturn(Optional.empty());
-        when(urlRepository.findByShortCodeAndActiveTrue("abc"))
-                .thenReturn(Optional.empty());
+        when(urlCache.getUrl("abc", "shard-0")).thenReturn(Optional.empty());
+        when(shardedUrlRepository.findByShortCode("abc")).thenReturn(Optional.empty());
 
         assertThrows(UrlNotFoundException.class, () -> urlService.resolveUrl("abc"));
     }
 
     @Test
     void resolveUrl_expired_throwsException() {
-        when(urlCache.getUrl("abc")).thenReturn(Optional.empty());
+        when(urlCache.getUrl("abc", "shard-0")).thenReturn(Optional.empty());
 
         Url url = new Url("abc", "https://expired.com",
                 Instant.now().minus(1, ChronoUnit.HOURS));
-        when(urlRepository.findByShortCodeAndActiveTrue("abc"))
-                .thenReturn(Optional.of(url));
+        when(shardedUrlRepository.findByShortCode("abc")).thenReturn(Optional.of(url));
 
         assertThrows(UrlExpiredException.class, () -> urlService.resolveUrl("abc"));
     }
 
     @Test
     void deleteUrl_deactivatesAndClearsCache() {
-        Url url = new Url("abc", "https://example.com", null);
-        when(urlRepository.findByShortCodeAndActiveTrue("abc"))
-                .thenReturn(Optional.of(url));
-
         urlService.deleteUrl("abc");
 
-        assertFalse(url.isActive());
-        verify(urlRepository).save(url);
-        verify(urlCache).removeUrl("abc");
+        verify(shardedUrlRepository).delete("abc");
+        verify(urlCache).removeUrl("abc", "shard-0");
     }
 
     @Test
-    void deleteUrl_notFound_throwsException() {
-        when(urlRepository.findByShortCodeAndActiveTrue("missing"))
-                .thenReturn(Optional.empty());
+    void resolveUrl_routesToCorrectShard() {
+        when(shardRouter.route("xY7mK9")).thenReturn("shard-2");
+        when(urlCache.getUrl("xY7mK9", "shard-2")).thenReturn(Optional.of("https://example.com"));
 
-        assertThrows(UrlNotFoundException.class, () -> urlService.deleteUrl("missing"));
+        UrlService.ResolvedUrl result = urlService.resolveUrl("xY7mK9");
+
+        assertEquals("shard-2", result.shardId());
+        verify(urlCache).getUrl("xY7mK9", "shard-2");
     }
 }

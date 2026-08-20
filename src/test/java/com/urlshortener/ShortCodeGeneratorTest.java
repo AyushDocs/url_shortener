@@ -1,12 +1,15 @@
 package com.urlshortener;
 
 import com.urlshortener.generator.ShortCodeGenerator;
-import com.urlshortener.repository.UrlRepository;
+import com.urlshortener.distributed.persistence.ShardedUrlRepository;
+import com.urlshortener.distributed.hashring.ConsistentHashRing;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -16,13 +19,13 @@ import static org.mockito.Mockito.*;
 class ShortCodeGeneratorTest {
 
     @Mock
-    private UrlRepository urlRepository;
+    private ShardedUrlRepository shardedUrlRepository;
 
     private ShortCodeGenerator generator;
 
     @BeforeEach
     void setUp() {
-        generator = new ShortCodeGenerator(6, urlRepository);
+        generator = new ShortCodeGenerator(6, shardedUrlRepository);
     }
 
     @Test
@@ -63,7 +66,7 @@ class ShortCodeGeneratorTest {
 
     @Test
     void generateUnique_noExistingCollisions() {
-        when(urlRepository.existsByShortCode(anyString())).thenReturn(false);
+        when(shardedUrlRepository.existsByShortCode(anyString())).thenReturn(false);
         String code = generator.generateUnique();
         assertNotNull(code);
         assertEquals(6, code.length());
@@ -81,5 +84,24 @@ class ShortCodeGeneratorTest {
         assertFalse(generator.isValidCode(""));
         assertFalse(generator.isValidCode("abc-def"));
         assertFalse(generator.isValidCode("has space"));
+    }
+
+    @Test
+    void consistentHashRing_distributesAcrossShards() {
+        List<String> shards = List.of("shard-0", "shard-1", "shard-2");
+        ConsistentHashRing<String> ring = new ConsistentHashRing<>(shards, 150);
+
+        int[] distribution = new int[3];
+        for (int i = 0; i < 10000; i++) {
+            String code = generator.generateRandom();
+            String target = ring.getNode(code);
+            int idx = shards.indexOf(target);
+            distribution[idx]++;
+        }
+
+        for (int i = 0; i < 3; i++) {
+            assertTrue(distribution[i] > 2000,
+                    "Shard " + i + " got only " + distribution[i] + " keys — poor distribution");
+        }
     }
 }

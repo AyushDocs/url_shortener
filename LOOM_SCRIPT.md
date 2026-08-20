@@ -118,11 +118,35 @@
 
 ---
 
-## Scene 10: Closing (10:45 – 11:30)
+## Scene 10: Distributed Sharding (11:30 – 13:00)
+
+**On screen:** Consistent hash ring diagram + 3 PostgreSQL instances
+
+> "Now the interesting part. What happens when one database can't handle all the traffic? You shard."
+
+> "I'm using a consistent hash ring. Each short code is hashed with MD5, and the ring maps it to one of three PostgreSQL shards. 150 virtual nodes per shard ensure even distribution."
+
+> "The critical properties: same short code always routes to the same shard — deterministic. Adding a 4th shard only redistributes 1/4 of keys — graceful rebalancing. And each shard has its own UNIQUE constraint, so collision handling still works locally."
+
+**Show:** `ConsistentHashRing.java`, `ShardRouter.java`, the hash ring distribution test.
+
+> "The routing uses ThreadLocal context. The ShardedUrlRepository sets the shard before each DB operation, and the RoutingDataSource — a Spring AbstractRoutingDataSource — picks the right connection pool."
+
+**Show:** `RoutingDataSource.java`, `ShardedUrlRepository.java`.
+
+> "The cache is shard-aware too. Keys are prefixed with the shard name: `shard:shard-0:url:abc123`. This prevents key collisions if two shards happen to have the same short code — which won't happen, but the defense is there."
+
+**Show:** Redis CLI showing shard-prefixed keys.
+
+> "The analytics events carry the shard ID. Kafka consumers can aggregate per-shard or globally. And the cleanup scheduler iterates all shards."
+
+---
+
+## Scene 11: Closing (13:00 – 13:45)
 
 **On screen:** Project structure + key takeaways
 
-> "This project answers the system-design interview questions: Why Base62? Why PostgreSQL? Why Redis? What happens on a cache miss? How do you count millions of clicks? How do you scale horizontally? Every decision has a justification."
+> "This project answers the system-design interview questions: Why Base62? Why consistent hashing? Why UUID primary keys? What happens if one shard goes down? How do you count millions of clicks across shards? Every decision has a justification."
 
 > "The code is on GitHub. Link in the description."
 
@@ -133,8 +157,9 @@
 ## B-Roll / Screen Recording Notes
 
 - Show `curl` commands hitting the API and getting responses
-- Show Redis CLI with cached entries
+- Show logs with `[shard=shard-0]` / `[shard=shard-1]` / `[shard=shard-2]` routing
+- Show Redis CLI with shard-prefixed cache keys
 - Show Grafana dashboard updating in real-time
 - Show Docker Compose logs scrolling
-- Show the test suite passing
+- Show the test suite passing (including hash ring distribution test)
 - Show the architecture diagram at transitions

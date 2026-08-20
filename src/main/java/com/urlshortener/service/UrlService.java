@@ -5,17 +5,18 @@ import com.urlshortener.domain.Url;
 import com.urlshortener.dto.CreateUrlRequest;
 import com.urlshortener.dto.CreateUrlResponse;
 import com.urlshortener.dto.UrlDetailResponse;
+import com.urlshortener.distributed.persistence.ShardedUrlRepository;
+import com.urlshortener.distributed.routing.ShardRouter;
+import com.urlshortener.distributed.routing.ShardRoutingContext;
 import com.urlshortener.exception.DuplicateShortCodeException;
 import com.urlshortener.exception.UrlExpiredException;
 import com.urlshortener.exception.UrlNotFoundException;
 import com.urlshortener.generator.ShortCodeGenerator;
-import com.urlshortener.repository.UrlRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -25,22 +26,26 @@ public class UrlService {
 
     private static final Logger log = LoggerFactory.getLogger(UrlService.class);
 
-    private final UrlRepository urlRepository;
+    private final ShardedUrlRepository shardedUrlRepository;
     private final UrlCache urlCache;
     private final ShortCodeGenerator shortCodeGenerator;
+    private final ShardRouter shardRouter;
     private final long defaultTtlSeconds;
 
-    public UrlService(UrlRepository urlRepository,
+    public UrlService(ShardedUrlRepository shardedUrlRepository,
                       UrlCache urlCache,
                       ShortCodeGenerator shortCodeGenerator,
+                      ShardRouter shardRouter,
                       @Value("${app.cache.url-ttl-seconds:3600}") long defaultTtlSeconds) {
-        this.urlRepository = urlRepository;
+        this.shardedUrlRepository = shardedUrlRepository;
         this.urlCache = urlCache;
         this.shortCodeGenerator = shortCodeGenerator;
+        this.shardRouter = shardRouter;
         this.defaultTtlSeconds = defaultTtlSeconds;
     }
 
-    @Transactional
+    public record ResolvedUrl(String originalUrl, String shardId) {}
+
     public CreateUrlResponse createUrl(CreateUrlRequest request) {
         String shortCode = (request.customCode() != null && !request.customCode().isBlank())
                 ? request.customCode()
@@ -50,22 +55,26 @@ public class UrlService {
             throw new IllegalArgumentException("Invalid short code: " + shortCode);
         }
 
+        String targetShard = shardRouter.route(shortCode);
+
         Instant expiresAt = request.ttlSeconds() != null
                 ? Instant.now().plusSeconds(request.ttlSeconds())
                 : null;
 
         Url url = new Url(shortCode, request.url(), expiresAt);
+        url.setShardId(targetShard);
 
         try {
-            url = urlRepository.save(url);
+            url = shardedUrlRepository.save(url);
         } catch (DataIntegrityViolationException ex) {
             throw new DuplicateShortCodeException(shortCode);
         }
 
         Duration ttl = computeTtl(expiresAt);
-        urlCache.putUrl(shortCode, request.url(), ttl);
+        urlCache.putUrl(shortCode, request.url(), ttl, targetShard);
 
-        log.info("Created short URL: {} -> {}", shortCode, request.url());
+        log.info("Created short URL: {} -> {} [shard={}]",
+                shortCode, request.url(), targetShard);
 
         return new CreateUrlResponse(
                 shortCode,
@@ -76,17 +85,18 @@ public class UrlService {
         );
     }
 
-    @Transactional(readOnly = true)
-    public String resolveUrl(String shortCode) {
-        String cached = urlCache.getUrl(shortCode).orElse(null);
+    public ResolvedUrl resolveUrl(String shortCode) {
+        String targetShard = shardRouter.route(shortCode);
+
+        String cached = urlCache.getUrl(shortCode, targetShard).orElse(null);
         if (cached != null) {
-            log.debug("Cache hit for shortCode={}", shortCode);
-            return cached;
+            log.debug("Cache hit for shortCode={} [shard={}]", shortCode, targetShard);
+            return new ResolvedUrl(cached, targetShard);
         }
 
-        log.debug("Cache miss for shortCode={}", shortCode);
+        log.debug("Cache miss for shortCode={} [shard={}]", shortCode, targetShard);
 
-        Url url = urlRepository.findByShortCodeAndActiveTrue(shortCode)
+        Url url = shardedUrlRepository.findByShortCode(shortCode)
                 .orElseThrow(() -> new UrlNotFoundException(shortCode));
 
         if (url.isExpired()) {
@@ -94,17 +104,17 @@ public class UrlService {
         }
 
         Duration ttl = computeTtl(url.getExpiresAt());
-        urlCache.putUrl(shortCode, url.getOriginalUrl(), ttl);
+        urlCache.putUrl(shortCode, url.getOriginalUrl(), ttl, targetShard);
 
-        return url.getOriginalUrl();
+        return new ResolvedUrl(url.getOriginalUrl(), targetShard);
     }
 
-    @Transactional(readOnly = true)
     public UrlDetailResponse getUrlDetail(String shortCode) {
-        Url url = urlRepository.findByShortCodeAndActiveTrue(shortCode)
+        Url url = shardedUrlRepository.findByShortCode(shortCode)
                 .orElseThrow(() -> new UrlNotFoundException(shortCode));
 
-        long redisClicks = urlCache.getClickCount(shortCode);
+        String targetShard = shardRouter.route(shortCode);
+        long redisClicks = urlCache.getClickCount(shortCode, targetShard);
 
         return new UrlDetailResponse(
                 shortCode,
@@ -117,25 +127,22 @@ public class UrlService {
         );
     }
 
-    @Transactional
     public void deleteUrl(String shortCode) {
-        Url url = urlRepository.findByShortCodeAndActiveTrue(shortCode)
-                .orElseThrow(() -> new UrlNotFoundException(shortCode));
+        shardedUrlRepository.delete(shortCode);
 
-        url.setActive(false);
-        urlRepository.save(url);
-        urlCache.removeUrl(shortCode);
+        String targetShard = shardRouter.route(shortCode);
+        urlCache.removeUrl(shortCode, targetShard);
 
-        log.info("Deleted short URL: {}", shortCode);
+        log.info("Deleted short URL: {} [shard={}]", shortCode, targetShard);
     }
 
-    @Transactional
     public void flushAnalytics(String shortCode) {
-        long redisClicks = urlCache.getClickCount(shortCode);
+        String targetShard = shardRouter.route(shortCode);
+        long redisClicks = urlCache.getClickCount(shortCode, targetShard);
         if (redisClicks > 0) {
-            urlRepository.incrementClickCount(shortCode, redisClicks);
-            urlCache.flushClicks(shortCode);
-            log.debug("Flushed {} clicks for {}", redisClicks, shortCode);
+            shardedUrlRepository.incrementClickCount(shortCode, redisClicks);
+            urlCache.flushClicks(shortCode, targetShard);
+            log.debug("Flushed {} clicks for {} [shard={}]", redisClicks, shortCode, targetShard);
         }
     }
 

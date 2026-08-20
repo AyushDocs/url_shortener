@@ -2,17 +2,6 @@ spring:
   application:
     name: url-shortener
 
-  datasource:
-    url: jdbc:postgresql://localhost:5432/urlshortener
-    username: postgres
-    password: postgres
-    driver-class-name: org.postgresql.Driver
-    hikari:
-      maximum-pool-size: 20
-      minimum-idle: 5
-      idle-timeout: 30000
-      connection-timeout: 5000
-
   jpa:
     hibernate:
       ddl-auto: update
@@ -59,6 +48,25 @@ app:
   cache:
     url-ttl-seconds: 3600
     analytics-ttl-seconds: 300
+
+app.shards:
+  virtual-nodes: 150
+  shards:
+    - name: shard-0
+      url: jdbc:postgresql://localhost:5432/urlshortener_0
+      username: postgres
+      password: postgres
+      driver-class-name: org.postgresql.Driver
+    - name: shard-1
+      url: jdbc:postgresql://localhost:5433/urlshortener_1
+      username: postgres
+      password: postgres
+      driver-class-name: org.postgresql.Driver
+    - name: shard-2
+      url: jdbc:postgresql://localhost:5434/urlshortener_2
+      username: postgres
+      password: postgres
+      driver-class-name: org.postgresql.Driver
 
 management:
   endpoints:

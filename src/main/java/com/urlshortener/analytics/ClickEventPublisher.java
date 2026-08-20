@@ -1,14 +1,15 @@
 package com.urlshortener.analytics;
 
-import com.urlshortener.cache.UrlCache;
-import com.urlshortener.repository.UrlRepository;
+import java.util.concurrent.CompletableFuture;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Component;
 
-import java.util.concurrent.CompletableFuture;
+import com.urlshortener.cache.UrlCache;
 
 @Component
 public class ClickEventPublisher {
@@ -28,17 +29,18 @@ public class ClickEventPublisher {
     }
 
     public void publish(ClickEvent event) {
-        urlCache.recordClick(event.shortCode());
+        urlCache.recordClick(event.shortCode(), event.shardId());
 
         CompletableFuture<SendResult<String, ClickEvent>> future =
-                kafkaTemplate.send(topicName, event.shortCode(), event);
+                kafkaTemplate.send(topicName, event.shardId() + ":" + event.shortCode(), event);
 
         future.whenComplete((result, ex) -> {
             if (ex != null) {
-                log.warn("Failed to publish click event for {}: {}", event.shortCode(), ex.getMessage());
+                log.warn("Failed to publish click event for {} [shard={}]: {}",
+                        event.shortCode(), event.shardId(), ex.getMessage());
             } else {
-                log.debug("Click event published for {} to partition {}",
-                        event.shortCode(),
+                log.debug("Click event published for {} [shard={}] to partition {}",
+                        event.shortCode(), event.shardId(),
                         result.getRecordMetadata().partition());
             }
         });

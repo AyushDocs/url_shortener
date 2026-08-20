@@ -40,6 +40,12 @@ class UrlCacheIntegrationTest {
         registry.add("spring.data.redis.host", redis::getHost);
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
         registry.add("spring.kafka.bootstrap-servers", () -> "localhost:9092");
+        registry.add("app.shards.virtual-nodes", () -> 150);
+        registry.add("app.shards.shards[0].name", () -> "shard-0");
+        registry.add("app.shards.shards[0].url", postgres::getJdbcUrl);
+        registry.add("app.shards.shards[0].username", postgres::getUsername);
+        registry.add("app.shards.shards[0].password", postgres::getPassword);
+        registry.add("app.shards.shards[0].driver-class-name", () -> "org.postgresql.Driver");
     }
 
     @Autowired
@@ -62,36 +68,45 @@ class UrlCacheIntegrationTest {
 
     @Test
     void cacheAndRetrieveUrl() {
-        urlCache.putUrl("abc", "https://example.com");
-        assertEquals("https://example.com", urlCache.getUrl("abc").orElse(null));
+        urlCache.putUrl("abc", "https://example.com", "shard-0");
+        assertEquals("https://example.com", urlCache.getUrl("abc", "shard-0").orElse(null));
     }
 
     @Test
     void cacheMiss_returnsEmpty() {
-        assertTrue(urlCache.getUrl("nonexistent").isEmpty());
+        assertTrue(urlCache.getUrl("nonexistent", "shard-0").isEmpty());
     }
 
     @Test
     void removeUrl_clearsEntry() {
-        urlCache.putUrl("abc", "https://example.com");
-        urlCache.removeUrl("abc");
-        assertTrue(urlCache.getUrl("abc").isEmpty());
+        urlCache.putUrl("abc", "https://example.com", "shard-0");
+        urlCache.removeUrl("abc", "shard-0");
+        assertTrue(urlCache.getUrl("abc", "shard-0").isEmpty());
     }
 
     @Test
     void clickTracking_works() {
-        urlCache.recordClick("abc");
-        urlCache.recordClick("abc");
-        urlCache.recordClick("abc");
-        assertEquals(3, urlCache.getClickCount("abc"));
+        urlCache.recordClick("abc", "shard-0");
+        urlCache.recordClick("abc", "shard-0");
+        urlCache.recordClick("abc", "shard-0");
+        assertEquals(3, urlCache.getClickCount("abc", "shard-0"));
     }
 
     @Test
     void flushClicks_resetsCount() {
-        urlCache.recordClick("abc");
-        urlCache.recordClick("abc");
-        urlCache.flushClicks("abc");
-        assertEquals(0, urlCache.getClickCount("abc"));
+        urlCache.recordClick("abc", "shard-0");
+        urlCache.recordClick("abc", "shard-0");
+        urlCache.flushClicks("abc", "shard-0");
+        assertEquals(0, urlCache.getClickCount("abc", "shard-0"));
+    }
+
+    @Test
+    void differentShards_areIsolated() {
+        urlCache.putUrl("abc", "https://shard0.com", "shard-0");
+        urlCache.putUrl("abc", "https://shard1.com", "shard-1");
+
+        assertEquals("https://shard0.com", urlCache.getUrl("abc", "shard-0").orElse(null));
+        assertEquals("https://shard1.com", urlCache.getUrl("abc", "shard-1").orElse(null));
     }
 
     @SpringBootApplication
