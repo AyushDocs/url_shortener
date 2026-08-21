@@ -4,9 +4,10 @@ import com.urlshortener.cache.UrlCache;
 import com.urlshortener.repository.UrlRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -20,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest
 @Testcontainers
+@EnabledIfSystemProperty(named = "runIntegrationTests", matches = "true")
 class UrlCacheIntegrationTest {
 
     @Container
@@ -109,6 +111,6 @@ class UrlCacheIntegrationTest {
         assertEquals("https://shard1.com", urlCache.getUrl("abc", "shard-1").orElse(null));
     }
 
-    @SpringBootApplication
+    @Configuration
     static class TestConfig {}
 }

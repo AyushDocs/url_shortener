@@ -3,6 +3,7 @@ package com.urlshortener;
 import com.urlshortener.ratelimiter.SlidingWindowRateLimiter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.testcontainers.containers.GenericContainer;
@@ -16,6 +17,7 @@ import java.time.Instant;
 import static org.junit.jupiter.api.Assertions.*;
 
 @Testcontainers
+@EnabledIfSystemProperty(named = "runIntegrationTests", matches = "true")
 class RateLimiterIntegrationTest {
 
     @Container

@@ -14,15 +14,13 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+    web:
+      base-url: https://sho.rt
 
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     topic:
       click-events: click-events
-
-  data:
-    web:
-      base-url: https://sho.rt
 
 server:
   port: 0
