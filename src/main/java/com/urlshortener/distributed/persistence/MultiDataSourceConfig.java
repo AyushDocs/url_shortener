@@ -29,9 +29,14 @@ public class MultiDataSourceConfig {
     private static final Logger log = LoggerFactory.getLogger(MultiDataSourceConfig.class);
 
     private final ShardRouter shardRouter;
+    private final int connectionPoolSize;
 
-    public MultiDataSourceConfig(ShardRouter shardRouter) {
+    public MultiDataSourceConfig(
+            ShardRouter shardRouter,
+            @org.springframework.beans.factory.annotation.Value("${app.shards.connection-pool-size:10}")
+            int connectionPoolSize) {
         this.shardRouter = shardRouter;
+        this.connectionPoolSize = connectionPoolSize;
     }
 
     @Bean
@@ -46,8 +51,10 @@ public class MultiDataSourceConfig {
             config.setUsername(shard.username());
             config.setPassword(shard.password());
             config.setDriverClassName(shard.driverClassName());
-            config.setMaximumPoolSize(10);
-            config.setMinimumIdle(2);
+            // Every replica opens one pool per shard, so the per-pod size has to stay small
+            // enough for replicas * shards * poolSize to fit the shard's max_connections.
+            config.setMaximumPoolSize(connectionPoolSize);
+            config.setMinimumIdle(Math.min(2, connectionPoolSize));
             config.setIdleTimeout(30000);
             config.setConnectionTimeout(5000);
 
@@ -83,7 +90,9 @@ public class MultiDataSourceConfig {
 
         Map<String, Object> properties = new HashMap<>();
         properties.put("hibernate.dialect", "org.hibernate.dialect.PostgreSQLDialect");
-        properties.put("hibernate.hbm2ddl.auto", "update");
+        // Schema creation is done per shard by ShardSchemaInitializer: Hibernate DDL through the
+        // routing DataSource would only ever reach the default shard (no shard bound to the thread).
+        properties.put("hibernate.hbm2ddl.auto", "none");
         properties.put("hibernate.format_sql", "true");
         properties.put("hibernate.jdbc.batch_size", "25");
         properties.put("hibernate.jdbc.fetch_size", "50");

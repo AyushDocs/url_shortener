@@ -55,6 +55,10 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-kafka</artifactId>
         </dependency>
@@ -94,7 +98,13 @@
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <scope>test</scope>
+        </dependency>
+        <!-- Jackson 2 JSR-310 module: Spring Kafka's JsonSerializer/JsonDeserializer use Jackson 2
+             (the web layer uses Jackson 3), and ClickEvent carries an Instant. Without this module
+             serialization fails synchronously in KafkaProducer.send, failing every redirect. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
         </dependency>
         <dependency>
             <groupId>com.redis</groupId>

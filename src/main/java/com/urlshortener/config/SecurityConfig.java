@@ -18,7 +18,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/urls").permitAll()
                         .requestMatchers("/api/v1/urls/**").permitAll()
                         .requestMatchers("/actuator/**").permitAll()
-                        .requestMatchers("/[a-zA-Z0-9]{1,16}").permitAll()
+                        .requestMatchers("/{shortCode}").permitAll()
                         .anyRequest().permitAll()
                 )
                 .formLogin(form -> form.disable())

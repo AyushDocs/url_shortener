@@ -18,7 +18,7 @@ import static org.mockito.Mockito.*;
 class ClickEventPublisherTest {
 
     @Mock
-    private KafkaTemplate<String, ClickEvent> kafkaTemplate;
+    private KafkaTemplate<String, Object> kafkaTemplate;
 
     @Mock
     private UrlCache urlCache;

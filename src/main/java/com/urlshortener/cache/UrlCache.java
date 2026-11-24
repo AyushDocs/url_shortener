@@ -53,6 +53,15 @@ public class UrlCache {
         redisTemplate.delete(clicksKey(shard, shortCode));
     }
 
+    /**
+     * Atomically reads and clears the click counter (Redis GETDEL), so clicks recorded while a
+     * flush is in flight are never dropped between the read and the delete.
+     */
+    public long getAndResetClickCount(String shortCode, String shard) {
+        String value = redisTemplate.opsForValue().getAndDelete(clicksKey(shard, shortCode));
+        return value != null ? Long.parseLong(value) : 0L;
+    }
+
     public void putClickCount(String shortCode, long count, Duration ttl, String shard) {
         redisTemplate.opsForValue().set(clicksKey(shard, shortCode), String.valueOf(count), ttl);
     }

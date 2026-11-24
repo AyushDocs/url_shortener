@@ -5,6 +5,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
@@ -19,10 +20,12 @@ public interface UrlRepository extends JpaRepository<Url, UUID> {
     boolean existsByShortCode(String shortCode);
 
     @Modifying
+    @Transactional
     @Query("UPDATE Url u SET u.active = false WHERE u.expiresAt IS NOT NULL AND u.expiresAt < :now AND u.active = true")
     int deactivateExpiredUrls(Instant now);
 
     @Modifying
+    @Transactional
     @Query("UPDATE Url u SET u.clickCount = u.clickCount + :increment WHERE u.shortCode = :shortCode")
     int incrementClickCount(String shortCode, long increment);
 

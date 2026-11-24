@@ -24,7 +24,8 @@ public class ExpiredUrlCleanupScheduler {
         this.shardRouter = shardRouter;
     }
 
-    @Scheduled(fixedRate = 300_000)
+    // initialDelay: the per-shard schema initializer runs after startup, so don't query before it finishes.
+    @Scheduled(fixedRate = 300_000, initialDelay = 60_000)
     public void deactivateExpiredUrls() {
         int deactivated = shardedUrlRepository.deactivateExpiredUrls(Instant.now());
         if (deactivated > 0) {

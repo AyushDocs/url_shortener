@@ -16,11 +16,11 @@ public class ClickEventPublisher {
 
     private static final Logger log = LoggerFactory.getLogger(ClickEventPublisher.class);
 
-    private final KafkaTemplate<String, ClickEvent> kafkaTemplate;
+    private final KafkaTemplate<String, Object> kafkaTemplate;
     private final UrlCache urlCache;
     private final String topicName;
 
-    public ClickEventPublisher(KafkaTemplate<String, ClickEvent> kafkaTemplate,
+    public ClickEventPublisher(KafkaTemplate<String, Object> kafkaTemplate,
                                UrlCache urlCache,
                                @Value("${spring.kafka.topic.click-events:click-events}") String topicName) {
         this.kafkaTemplate = kafkaTemplate;
@@ -31,7 +31,7 @@ public class ClickEventPublisher {
     public void publish(ClickEvent event) {
         urlCache.recordClick(event.shortCode(), event.shardId());
 
-        CompletableFuture<SendResult<String, ClickEvent>> future =
+        CompletableFuture<SendResult<String, Object>> future =
                 kafkaTemplate.send(topicName, event.shardId() + ":" + event.shortCode(), event);
 
         future.whenComplete((result, ex) -> {

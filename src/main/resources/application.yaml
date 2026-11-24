@@ -50,6 +50,7 @@ app:
     analytics-ttl-seconds: 300
   shards:
     virtual-nodes: 150
+    connection-pool-size: 10
     shards:
       - name: shard-0
         url: jdbc:postgresql://localhost:5432/urlshortener_0

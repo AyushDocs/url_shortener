@@ -138,10 +138,9 @@ public class UrlService {
 
     public void flushAnalytics(String shortCode) {
         String targetShard = shardRouter.route(shortCode);
-        long redisClicks = urlCache.getClickCount(shortCode, targetShard);
+        long redisClicks = urlCache.getAndResetClickCount(shortCode, targetShard);
         if (redisClicks > 0) {
             shardedUrlRepository.incrementClickCount(shortCode, redisClicks);
-            urlCache.flushClicks(shortCode, targetShard);
             log.debug("Flushed {} clicks for {} [shard={}]", redisClicks, shortCode, targetShard);
         }
     }

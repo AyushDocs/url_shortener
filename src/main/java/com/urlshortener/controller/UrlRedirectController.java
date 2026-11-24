@@ -26,7 +26,7 @@ public class UrlRedirectController {
         this.urlMetrics = urlMetrics;
     }
 
-    @GetMapping("/{shortCode:[a-zA-Z0-9]{1,16}}")
+    @GetMapping("/{shortCode:[a-zA-Z0-9]+}")
     public ResponseEntity<Void> redirect(@PathVariable String shortCode,
                                          HttpServletRequest request) {
         long start = System.currentTimeMillis();
