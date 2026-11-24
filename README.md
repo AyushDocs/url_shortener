@@ -229,6 +229,38 @@ docker compose up -d
 
 Starts: 3 PostgreSQL shards, Redis, Kafka, Zookeeper, Spring Boot app, Prometheus, Grafana.
 
+### Kubernetes (multiple app instances)
+
+The app tier is stateless — shard routing is computed in-process and all shared state is in Redis, PostgreSQL and Kafka — so replicas can be scaled horizontally and any replica can serve any read. `k8s/` holds the whole stack (3 shard StatefulSets, Redis, ZooKeeper, Kafka) plus a 3–12 replica Deployment with a `ClusterIP` Service, CPU-based HPA, PodDisruptionBudget, startup/readiness/liveness probes and a rolling update that keeps capacity available.
+
+```bash
+# Build the image and make it visible to your cluster
+docker build -t url-shortener:latest .
+minikube image load url-shortener:latest    # or: kind load docker-image url-shortener:latest
+
+# Deploy everything
+kubectl apply -k k8s
+kubectl -n urlshortener rollout status deployment/url-shortener
+
+# Reach the load-balanced Service
+kubectl -n urlshortener port-forward svc/url-shortener 8080:80
+curl http://localhost:8080/actuator/health
+
+# Scale reads, then watch the Service spread them across pods
+kubectl -n urlshortener scale deployment/url-shortener --replicas=6
+kubectl -n urlshortener get pods -l app=url-shortener -o wide
+kubectl -n urlshortener get hpa url-shortener
+```
+
+`./scripts/k8s-demo.sh` automates the demo: deploy, benchmark reads on 3 replicas, print the per-pod redirect counters, scale to 6, benchmark again.
+
+Notes for the Kubernetes profile:
+- The per-pod Hikari pool is `APP_SHARDS_CONNECTION_POOL_SIZE` (4 in `k8s/config.yaml`), so 12 replicas × 3 shards × 4 connections stays under the shard's `max_connections=200`. Raise both together.
+- Click events use 6 topic partitions (`SPRING_KAFKA_TOPIC_CLICK_EVENTS_PARTITIONS`), so up to 6 replicas consume analytics in parallel. A topic that already exists keeps its partition count — recreate it or add partitions with `kafka-topics.sh`.
+- The HPA needs a metrics-server in the cluster; without one it reports unknown metrics and replicas must be scaled manually. When it is installed, the HPA owns the replica count and may override a manual `kubectl scale`.
+- Rate limiting and click counters live in Redis, so limits stay global across replicas and each pod's analytics flush is atomic (`GETDEL`) — replicas never double-count a click. The expiration cleanup scheduler runs on every replica; it is idempotent, so extra runs only add read load.
+- Images built for Docker Compose are not automatically visible inside minikube/kind; the demo script loads them.
+
 ### Without Docker
 
 ```bash
@@ -273,6 +305,100 @@ The test suite includes:
 - Cache isolation between shards
 - Collision handling
 - Expiration logic
+
+### Test results
+
+`mvn test` (default run, integration tests disabled):
+
+```
+Tests run: 95, Failures: 0, Errors: 0, Skipped: 11
+BUILD SUCCESS
+```
+
+Breakdown by class (from `target/surefire-reports`):
+
+| Class | Tests run | Failures | Errors | Skipped |
+|---|---|---|---|---|
+| ConsistentHashRingTest (4 nested classes) | 10 | 0 | 0 | 0 |
+| UrlTest | 10 | 0 | 0 | 0 |
+| UrlServiceTest | 8 | 0 | 0 | 0 |
+| ShardedUrlRepositoryTest | 6 | 0 | 0 | 0 |
+| ShortCodeGeneratorTest | 9 | 0 | 0 | 0 |
+| UrlManagementControllerTest | 8 | 0 | 0 | 0 |
+| UrlRedirectControllerTest | 5 | 0 | 0 | 0 |
+| ClickEventPublisherTest | 5 | 0 | 0 | 0 |
+| ShardRoutingContextTest | 5 | 0 | 0 | 0 |
+| ShardRouterTest | 7 | 0 | 0 | 0 |
+| ExpirationTest | 6 | 0 | 0 | 0 |
+| ConcurrencyTest | 4 | 0 | 0 | 0 |
+| UrlCacheIntegrationTest | 6 | 0 | 0 | 6 |
+| RateLimiterIntegrationTest | 4 | 0 | 0 | 4 |
+| UrlShortenerApplicationTests | 1 | 0 | 0 | 1 |
+
+The 11 skips are the Testcontainers-based integration tests, enabled with
+`mvn test -DrunIntegrationTests=true` (they need a Docker daemon):
+
+```
+Tests run: 87, Failures: 0, Errors: 3
+BUILD FAILURE
+```
+
+The 3 errors are environment issues, not code failures: Testcontainers 1.20.1 uses the
+docker-java client API version 1.32 while the Docker daemon here requires a minimum of
+1.40 ("client version 1.32 is too old. Please upgrade your client to a newer version").
+Setting `DOCKER_API_VERSION=1.45` does not change it. All unit, controller and hash-ring
+tests pass.
+
+## Benchmarks & Test Results
+
+### Load benchmarks (`scripts/bench-run.sh`)
+
+`scripts/bench-run.sh` port-forwards the deployed Service, waits for
+`/actuator/health`, runs `scripts/benchmark.py` and writes the JSON result to the path
+given as the last argument (default `results/benchmark.json`):
+
+```bash
+./scripts/bench-run.sh redirect 30 100 scripts/results/k8s-redirect-3.json
+./scripts/bench-run.sh redirect 30 100 scripts/results/k8s-redirect-4.json
+./scripts/bench-run.sh create   20 20  scripts/results/k8s-create.json
+./scripts/bench-run.sh mixed    30 100 scripts/results/k8s-mixed.json
+```
+
+Environment for these runs: minikube v1.39.0 (context `minikube`), kubectl v1.37.2,
+Docker 29.9.3, host Java 21 (the image runs Java 17), 3–4 url-shortener replicas on a
+minikube VM with 8 vCPU. Absolute numbers are indicative of the stack, not of
+high-performance hardware. All runs had 0 transport errors; `--json` files under
+`scripts/results/` hold the full per-second series too.
+
+| Result file | Scenario | Replicas | Total | Throughput | p50 | p95 | p99 | Status |
+|---|---|---|---|---|---|---|---|---|
+| `k8s-redirect-3.json` | redirect | 3 | 5,675 | 187.4 req/s | 507.1 ms | 775.1 ms | 1,013.1 ms | 302 ×5,675 |
+| `k8s-redirect-4.json` | redirect | 4 | 11,664 | 387.2 req/s | 255.6 ms | 391.3 ms | 438.5 ms | 302 ×11,664 |
+| `k8s-create.json` | create | 4 | 623 | 29.9 req/s | 576.1 ms | 1,246.0 ms | 1,615.8 ms | 201 ×623 |
+| `k8s-mixed.json` | mixed | 4 | 7,755 | 244.0 req/s | 318.0 ms | 910.0 ms | 1,521.4 ms | 302 ×6,979 + 201 ×776 |
+
+### k8s demo run (`scripts/k8s-demo.sh`): 3 replicas, then scaled to 6
+
+| Phase | Total | Throughput | p50 | p95 | p99 | Status |
+|---|---|---|---|---|---|---|
+| 3 replicas (redirect, 30s @ 100) | 9,007 | 297.0 req/s | 313.0 ms | 495.3 ms | 581.4 ms | 302 ×9,007 |
+| 6 replicas (redirect, 30s @ 100) | 4,855 | 160.0 req/s | 586.1 ms | 1,105.0 ms | 1,230.7 ms | 302 ×4,855 |
+
+The 6-replica phase was slower in this environment (higher latency, lower throughput).
+The demo uses only 25 short codes, so the read path is served from the hot cache and
+the bottleneck shifts to Redis and the shared state of the minikube VM before more
+replicas help; this is why the run measures capacity, not peak scaling numbers.
+
+### Deployment notes for minikube
+
+Two issues found while deploying and fixed in `k8s/kafka.yaml` (single-broker Kafka):
+
+- `KAFKA_PORT` is now set to `""`. Kubernetes injects the legacy service env var
+  `KAFKA_PORT` into every pod in the namespace (a Service named `kafka` exists), and
+  cp-kafka 7.6.0 exits 1 on any set `KAFKA_PORT` ("port is deprecated").
+- The readiness probe now uses `tcpSocket: 9092` instead of the exec-based
+  `kafka-broker-api-versions` — the exec command hangs against this broker while the
+  broker binds `0.0.0.0:9092` and answers TCP connections.
 
 ## Monitoring
 

@@ -1,0 +1,43 @@
+{
+  "startedAt": "2026-11-24T09:55:28+00:00",
+  "scenario": "create",
+  "baseUrl": "http://localhost:8081",
+  "concurrency": 20,
+  "durationSeconds": 20.86,
+  "totalRequests": 623,
+  "requestsPerSecond": 29.9,
+  "statusCodes": {
+    "201": 623
+  },
+  "transportErrors": {},
+  "latencyMs": {
+    "min": 126.16,
+    "mean": 654.08,
+    "p50": 576.13,
+    "p90": 1106.26,
+    "p95": 1245.92,
+    "p99": 1615.98,
+    "max": 1790.13
+  },
+  "requestsPerSecondSeries": [
+    18.0,
+    21.0,
+    37.0,
+    22.0,
+    25.0,
+    30.0,
+    26.0,
+    36.0,
+    19.0,
+    25.0,
+    22.0,
+    39.0,
+    52.9,
+    50.9,
+    37.0,
+    20.0,
+    28.0,
+    32.0,
+    27.0
+  ]
+}

@@ -1,0 +1,248 @@
+# One StatefulSet per shard, matching the compose topology (shard-N -> urlshortener_N).
+# The app's consistent hash ring addresses these by their stable Service names.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-shard-0
+  namespace: urlshortener
+  labels:
+    app: postgres-shard-0
+spec:
+  selector:
+    app: postgres-shard-0
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-shard-0
+  namespace: urlshortener
+spec:
+  serviceName: postgres-shard-0
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-shard-0
+  template:
+    metadata:
+      labels:
+        app: postgres-shard-0
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          args: ["-c", "max_connections=200"]
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: urlshortener_0
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: url-shortener-db
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: url-shortener-db
+                  key: POSTGRES_PASSWORD
+            # A tiny shard does not need a 128 MB shared buffer cache.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "urlshortener_0"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "urlshortener_0"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-shard-1
+  namespace: urlshortener
+  labels:
+    app: postgres-shard-1
+spec:
+  selector:
+    app: postgres-shard-1
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-shard-1
+  namespace: urlshortener
+spec:
+  serviceName: postgres-shard-1
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-shard-1
+  template:
+    metadata:
+      labels:
+        app: postgres-shard-1
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          args: ["-c", "max_connections=200"]
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: urlshortener_1
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: url-shortener-db
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: url-shortener-db
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "urlshortener_1"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "urlshortener_1"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-shard-2
+  namespace: urlshortener
+  labels:
+    app: postgres-shard-2
+spec:
+  selector:
+    app: postgres-shard-2
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-shard-2
+  namespace: urlshortener
+spec:
+  serviceName: postgres-shard-2
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-shard-2
+  template:
+    metadata:
+      labels:
+        app: postgres-shard-2
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          args: ["-c", "max_connections=200"]
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: urlshortener_2
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: url-shortener-db
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: url-shortener-db
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "urlshortener_2"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "urlshortener_2"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

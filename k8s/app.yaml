@@ -1,0 +1,194 @@
+# The app tier is stateless: shard routing is computed in-process, and all shared state
+# lives in Redis/Postgres/Kafka. Any replica can serve any short code, so the Service
+# round-robins reads across every ready pod and the HPA can add more.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: url-shortener
+  namespace: urlshortener
+  labels:
+    app: url-shortener
+spec:
+  replicas: 3
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: url-shortener
+  template:
+    metadata:
+      labels:
+        app: url-shortener
+    spec:
+      terminationGracePeriodSeconds: 30
+      # Spread replicas across nodes so one node failure cannot take all read capacity.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: url-shortener
+      initContainers:
+        # The app builds its Hikari pools eagerly, so wait for the shards instead of
+        # letting the first pod crash-loop on a cold cluster.
+        - name: wait-postgres-shard-0
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - until pg_isready -h postgres-shard-0 -U postgres; do sleep 2; done
+        - name: wait-postgres-shard-1
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - until pg_isready -h postgres-shard-1 -U postgres; do sleep 2; done
+        - name: wait-postgres-shard-2
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - until pg_isready -h postgres-shard-2 -U postgres; do sleep 2; done
+        - name: wait-redis
+          image: redis:7-alpine
+          command:
+            - sh
+            - -c
+            - until redis-cli -h redis ping | grep -q PONG; do sleep 2; done
+      containers:
+        - name: app
+          image: url-shortener:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: url-shortener-config
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # Per-pod tag so Prometheus can show which replica served the traffic.
+            - name: MANAGEMENT_METRICS_TAGS_POD
+              value: "$(POD_NAME)"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
+            - name: APP_SHARDS_SHARDS_0_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: url-shortener-db
+                  key: POSTGRES_PASSWORD
+            - name: APP_SHARDS_SHARDS_1_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: url-shortener-db
+                  key: POSTGRES_PASSWORD
+            - name: APP_SHARDS_SHARDS_2_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: url-shortener-db
+                  key: POSTGRES_PASSWORD
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 3
+            failureThreshold: 45
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              # Let the Service remove this pod from its endpoints before the JVM stops.
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: url-shortener
+  namespace: urlshortener
+  labels:
+    app: url-shortener
+spec:
+  type: ClusterIP
+  selector:
+    app: url-shortener
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: url-shortener
+  namespace: urlshortener
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: url-shortener
+  minReplicas: 3
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 15
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 120
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: url-shortener
+  namespace: urlshortener
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: url-shortener

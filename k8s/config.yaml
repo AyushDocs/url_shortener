@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: url-shortener-config
+  namespace: urlshortener
+data:
+  # --- Sharding: every replica computes the same ring, so routing is pod-independent ---
+  APP_SHARDS_VIRTUAL_NODES: "150"
+  # 4 connections per shard per pod: 12 replicas x 3 shards x 4 = 144 < max_connections=200.
+  APP_SHARDS_CONNECTION_POOL_SIZE: "4"
+
+  APP_SHARDS_SHARDS_0_NAME: shard-0
+  APP_SHARDS_SHARDS_0_URL: jdbc:postgresql://postgres-shard-0:5432/urlshortener_0
+  APP_SHARDS_SHARDS_0_USERNAME: postgres
+  APP_SHARDS_SHARDS_0_DRIVER_CLASS_NAME: org.postgresql.Driver
+
+  APP_SHARDS_SHARDS_1_NAME: shard-1
+  APP_SHARDS_SHARDS_1_URL: jdbc:postgresql://postgres-shard-1:5432/urlshortener_1
+  APP_SHARDS_SHARDS_1_USERNAME: postgres
+  APP_SHARDS_SHARDS_1_DRIVER_CLASS_NAME: org.postgresql.Driver
+
+  APP_SHARDS_SHARDS_2_NAME: shard-2
+  APP_SHARDS_SHARDS_2_URL: jdbc:postgresql://postgres-shard-2:5432/urlshortener_2
+  APP_SHARDS_SHARDS_2_USERNAME: postgres
+  APP_SHARDS_SHARDS_2_DRIVER_CLASS_NAME: org.postgresql.Driver
+
+  # --- Shared state: cache, rate-limit counters and analytics live outside the pods ---
+  SPRING_DATA_REDIS_HOST: redis
+  SPRING_DATA_REDIS_PORT: "6379"
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+  # 6 partitions so up to 6 replicas can consume clicks in parallel. A topic that already
+  # exists keeps its partition count, so this only takes effect on a fresh topic.
+  SPRING_KAFKA_TOPIC_CLICK_EVENTS_PARTITIONS: "6"
+  APP_ANALYTICS_FLUSH_INTERVAL_MS: "2000"
+
+  # Kubernetes probes are served by Actuator's liveness/readiness groups.
+  MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"
